@@ -3,6 +3,7 @@
 //
 
 #include <mpi.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "utils.c"
@@ -12,17 +13,9 @@ int grid_row(int partition_rank, int partitions_width) {
     return (int) (partition_rank / partitions_width);
 }
 
-int a_offset(int partition_rank, int partitions_width, int partition_size) {
-    return grid_row(partition_rank, partitions_width) * partition_size;
-}
-
 // Shows which col of the grid this node is on
 int grid_col(int partition_rank, int partitions_width) {
     return partition_rank % partitions_width;
-}
-
-int b_offset(int partition_rank, int partitions_width, int partition_size) {
-    return grid_col(partition_rank, partitions_width) * partition_size;
 }
 
 /**
@@ -30,7 +23,8 @@ int b_offset(int partition_rank, int partitions_width, int partition_size) {
  * @param matrix_a - row-wise addressed matrix_a
  * @param matrix_b - column-wise addressed matrix_b
  * @param matrix_c - row-wise addressed matrix_c
- * @param matrix_size - size of the matrix
+ * @param matrix_size - size of the full matrix
+ * @param partition_size - size of the block to calculate
  */
 /// There must be an ability for non-square matrices
 void ijk(double *matrix_a, double *matrix_b, double *matrix_c, int matrix_size, int partition_size) {
@@ -47,7 +41,7 @@ void ijk(double *matrix_a, double *matrix_b, double *matrix_c, int matrix_size, 
 int main(int argc, char **argv) {
     int num_partitions, matrix_size, partition_rank;
     parse_matrix_size(argc, argv, &matrix_size);
-    double start, end;
+    struct timespec start, end;
 
     // Initializes MPI here
     MPI_Init(&argc, &argv);
@@ -55,7 +49,8 @@ int main(int argc, char **argv) {
     MPI_Comm_rank(MPI_COMM_WORLD, &partition_rank);
 
     // Making sure partitioning is possible
-    check_partition(matrix_size, num_partitions);
+    if (partition_rank == 0)
+        check_partition(matrix_size, num_partitions);
 
     // Full length of the stripe of memory for partition
     int partition_size = (matrix_size * matrix_size) / num_partitions;
@@ -77,81 +72,71 @@ int main(int argc, char **argv) {
     // to calculate full sq0 of matrix C, the node will need sq0 and sq2 form matrix A and sq0 and sq1 from matrix B
     // We're going to introduce concept of "Local stripe", which is a full block required for multiplication
 
-    // Local offset shows where THIS partition-generated data is located INSIDE local stripe for matrix A
-    // e.g. if you're at node 2 in 4 node cluster, you have A stripe starting at 1 * 2(because node 2 is at 1st row)
-    // if at node 1, A stripe starting at 0 * 2(because node 1 is at 0 row). Where 2 is number of partitions in row/col
-
-    int local_offset_a = a_offset(partition_rank, partitions_width, partition_size); // at which row this node is
-    int local_offset_b = b_offset(partition_rank, partitions_width, partition_size); // at which col this node is
-
     int grid_row_pos = grid_row(partition_rank, partitions_width);
     int grid_col_pos = grid_col(partition_rank, partitions_width);
 
-    printf("Partition %d of %d total, partition size %d, matrix %d x %d partitions, place in grid %dx%d, local offset A %d, B %d\n",
-           partition_rank, num_partitions, partition_size, partitions_width, partitions_width, grid_row_pos,
-           grid_col_pos, local_offset_a, local_offset_b);
+    //printf("Partition %d of %d total, partition size %d, matrix %d x %d partitions, place in grid %dx%d\n",
+    //       partition_rank, num_partitions, partition_size, partitions_width, partitions_width, grid_row_pos,
+    //       grid_col_pos);
 
-    double *a_local_stripe = malloc(partition_size * partitions_width * sizeof(double));
-    double *b_local_stripe = malloc(partition_size * partitions_width * sizeof(double));
-    double *c_local_block = malloc(partition_size * sizeof(double));
-    random_matrix(a_local_stripe + local_offset_a, partition_size);
-    random_matrix(b_local_stripe + local_offset_b, partition_size);
+    // Allocating local blocks
+    double *a_local_block = malloc(partition_size * sizeof(double));
+    double *b_local_block = malloc(partition_size * sizeof(double));
 
-    int mpi_col_in_row_rank, mpi_row_size;
+    // Filling local blocks with randomness
+    random_matrix(a_local_block, partition_size);
+    random_matrix(b_local_block, partition_size);
+
+    // Splitting global communicator into row-based blocks based on which row in grid current node is
+    int mpi_col_in_row_rank, mpi_row_size; // rank in row(col), row size
     MPI_Comm row_comm;
     MPI_Comm_split(MPI_COMM_WORLD, grid_row_pos, partition_rank, &row_comm);
     MPI_Comm_rank(row_comm, &mpi_col_in_row_rank);
     MPI_Comm_size(row_comm, &mpi_row_size);
 
-    printf("Communication group for row %d, world rank %d, row rank %d, row size %d\n", grid_row_pos, partition_rank,
-           mpi_col_in_row_rank, mpi_row_size);
+    //printf("Communication group for row %d, world rank %d, row rank %d, row size %d\n",
+    //       grid_row_pos, partition_rank, mpi_col_in_row_rank, mpi_row_size);
 
-    int mpi_row_in_col_rank, mpi_col_size;
+    // Splitting global communicator  into col-based blocks based on which col in grid current node is
+    int mpi_row_in_col_rank, mpi_col_size; // rank in col(row), col size
     MPI_Comm col_comm;
     MPI_Comm_split(MPI_COMM_WORLD, grid_col_pos, partition_rank, &col_comm);
     MPI_Comm_rank(col_comm, &mpi_row_in_col_rank);
     MPI_Comm_size(col_comm, &mpi_col_size);
-    printf("Communication group for col %d, world rank %d, row rank %d, row size %d\n", grid_col_pos, partition_rank,
-           mpi_row_in_col_rank, mpi_col_size);
+
+    // printf("Communication group for col %d, world rank %d, row rank %d, row size %d\n",
+    //        grid_col_pos, partition_rank, mpi_row_in_col_rank, mpi_col_size);
 
     // Blocks until all processes in the communicator have reached this routine
     MPI_Barrier(MPI_COMM_WORLD);
+
     if (partition_rank == 0)
-        start = MPI_Wtime();
+        clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-    // Here we're syncing a_local_stripe
-    for (int dst_rank = 0; dst_rank < mpi_col_size; dst_rank++) {
-        int remote_offset = a_offset(dst_rank, partitions_width, partition_size);
-        printf("Syncing a_local_stripe col %d, local offset %d, remote %d from node %d to %d(col)\n",
-               grid_col_pos, local_offset_a, remote_offset, mpi_col_in_row_rank, dst_rank);
-        MPI_Gather(a_local_stripe + local_offset_a,
-                   partition_size, MPI_DOUBLE,
-                   a_local_stripe + remote_offset,
-                   partition_size, MPI_DOUBLE, dst_rank, row_comm
-        );
-    }
+    //printf("Syncing a_local_col col %d, node %d(world)/%d(col)\n", grid_col_pos, partition_rank, mpi_col_in_row_rank);
+    double *a_local_col = malloc(partition_size * partitions_width * sizeof(double));
+    // Syncing an entire column of matrix A into a_local_col. MPI_Allgather will order received data by ranks of the
+    // nodes in the column(rows), so in the end a_local_col will represent full col of matrix blocks
+    MPI_Allgather(a_local_block, partition_size, MPI_DOUBLE, a_local_col, partition_size, MPI_DOUBLE, col_comm);
+    free(a_local_block); // No need to have this block anymore
 
-    // Here we're syncing b_local_stripe
-    for (int dst_rank = 0; dst_rank < mpi_row_size; dst_rank++) {
-        int remote_offset = b_offset(dst_rank, partitions_width, partition_size);
-        printf("Syncing b_local_stripe row %d, local offset %d, remote %d from node %d to %d(row)\n",
-               grid_row_pos, local_offset_b, remote_offset, mpi_row_in_col_rank, dst_rank);
-        MPI_Gather(b_local_stripe + local_offset_b,
-                   partition_size, MPI_DOUBLE,
-                   b_local_stripe + remote_offset,
-                   partition_size, MPI_DOUBLE, dst_rank, row_comm
-        );
-    }
 
-    // Blocking sync
-    MPI_Barrier(MPI_COMM_WORLD);
+    //printf("Syncing b_local_row row %d, node %d(world)/%d(row)\n", grid_row_pos, partition_rank, mpi_row_in_col_rank);
+    double *b_local_row = malloc(partition_size * partitions_width * sizeof(double));
+    // Syncing an entire row of matrix B into b_local_row. MPI_Allgather will order received data by ranks of the
+    // nodes in the row(cols), so in the end b_local_row will represent full row of matrix blocks
+    MPI_Allgather(b_local_block, partition_size, MPI_DOUBLE, b_local_row, partition_size, MPI_DOUBLE, col_comm);
+    free(b_local_block); // No need to have this block anymore
 
+    double *c_local_block = malloc(partition_size * sizeof(double));
+
+    //printf("Calculating matrix C block %dx%d\n", grid_row_pos, grid_col_pos);
     // Now we have both stripes completed, it's time to multiply
-    ijk(a_local_stripe, b_local_stripe, c_local_block, matrix_size, (int) sqrt(partition_size));
+    ijk(a_local_col, b_local_row, c_local_block, matrix_size, (int) sqrt(partition_size));
 
-    // Once calculations are complete, we can free stripes
-    free(a_local_stripe);
-    free(b_local_stripe);
+    // Once calculations are complete, we can free local rows and cols
+    free(a_local_col);
+    free(b_local_row);
     MPI_Barrier(MPI_COMM_WORLD);
 
     double *matrix_c;
@@ -160,15 +145,19 @@ int main(int argc, char **argv) {
         matrix_c = malloc(matrix_size * matrix_size * sizeof(double));
     }
 
+    // Gathering all blocks(c_local_block) of matrix_c into global matrix on node 0
     MPI_Gather(c_local_block, partition_size, MPI_DOUBLE, matrix_c, partition_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
     if (partition_rank == 0) {
-        end = MPI_Wtime();
-        printf("Matrix C memory stripe:\n");
-        for (int l = 0; l < matrix_size * matrix_size; ++l) {
-            printf("%f ", *(matrix_c + l));
-        }
-        printf("\n");
+        clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+        //printf("Matrix C memory stripe:\n");
+        //for (int l = 0; l < matrix_size * matrix_size; ++l) {
+        //    printf("%f ", *(matrix_c + l));
+        //}
+        //printf("\n");
+        uint64_t delta_us =
+                (end.tv_sec - start.tv_sec) * 1000000 + (end.tv_nsec - start.tv_nsec) / 1000; // microseconds
+        printf("%d;%d;%llu\n", matrix_size, partitions_width, delta_us);
         free(matrix_c);
     }
 

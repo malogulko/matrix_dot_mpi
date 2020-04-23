@@ -19,8 +19,8 @@ struct matrixInfo {
 };
 
 void check_partition(int matrix_size, int num_partitions) {
-    if ( fmod((double) matrix_size, sqrt(num_partitions)) != 0.) {
-        fprintf(stderr, "matrix must be dividable into square partitions");
+    if ( fmod((double) matrix_size*matrix_size, num_partitions) != 0.) {
+        fprintf(stderr, "matrix must be dividable into square partitions\n");
         exit(1);
     }
 }
