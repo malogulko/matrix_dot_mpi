@@ -62,9 +62,10 @@ cmake on Mac:
                    ┌---------------------- Number of nodes
                    |                   ┌-- X size of square matrix
 .build# mpirun -np 4 ./matrix_dot_mpi 16
-16;4;28
- | | |
- | | └------ Time spent in calculation only(microseconds)
+16;4;3;19
+ | | |  |
+ | | |  └--- Time spent in calculation and data transfer(microseconds)
+ | | └------ Time spent in data transfer only(microseconds)
  | └-------- Number of nodes
  └---------- X size of square matrix
 ```

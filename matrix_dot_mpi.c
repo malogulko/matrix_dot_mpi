@@ -41,7 +41,7 @@ void ijk(double *matrix_a, double *matrix_b, double *matrix_c, int matrix_size, 
 int main(int argc, char **argv) {
     int num_partitions, matrix_size, partition_rank;
     parse_matrix_size(argc, argv, &matrix_size);
-    struct timespec start, end;
+    struct timespec start, end, start_sync, end_sync;
 
     // Initializes MPI here
     MPI_Init(&argc, &argv);
@@ -110,8 +110,11 @@ int main(int argc, char **argv) {
     // Blocks until all processes in the communicator have reached this routine
     MPI_Barrier(MPI_COMM_WORLD);
 
-    if (partition_rank == 0)
+    if (partition_rank == 0) {
         clock_gettime(CLOCK_MONOTONIC_RAW, &start);
+        // This is to record syncing time
+        clock_gettime(CLOCK_MONOTONIC_RAW, &start_sync);
+    }
 
     //printf("Syncing a_local_col col %d, node %d(world)/%d(col)\n", grid_col_pos, partition_rank, mpi_col_in_row_rank);
     double *a_local_col = malloc(partition_size * partitions_width * sizeof(double));
@@ -129,6 +132,10 @@ int main(int argc, char **argv) {
     free(b_local_block); // No need to have this block anymore
 
     double *c_local_block = malloc(partition_size * sizeof(double));
+
+    if (partition_rank == 0) {
+        clock_gettime(CLOCK_MONOTONIC_RAW, &end_sync);
+    }
 
     //printf("Calculating matrix C block %dx%d\n", grid_row_pos, grid_col_pos);
     // Now we have both stripes completed, it's time to multiply
@@ -157,7 +164,9 @@ int main(int argc, char **argv) {
         //printf("\n");
         uint64_t delta_us =
                 (end.tv_sec - start.tv_sec) * 1000000 + (end.tv_nsec - start.tv_nsec) / 1000; // microseconds
-        printf("%d;%d;%llu\n", matrix_size, num_partitions, delta_us);
+        uint64_t delta_comm =
+                (end_sync.tv_sec - start_sync.tv_sec) * 1000000 + (end_sync.tv_nsec - start_sync.tv_nsec) / 1000; // microseconds
+        printf("%d;%d;%llu;%llu\n", matrix_size, num_partitions, delta_comm, delta_us);
         free(matrix_c);
     }
 
