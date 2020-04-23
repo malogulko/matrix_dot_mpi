@@ -157,7 +157,7 @@ int main(int argc, char **argv) {
         //printf("\n");
         uint64_t delta_us =
                 (end.tv_sec - start.tv_sec) * 1000000 + (end.tv_nsec - start.tv_nsec) / 1000; // microseconds
-        printf("%d;%d;%llu\n", matrix_size, partitions_width, delta_us);
+        printf("%d;%d;%llu\n", matrix_size, num_partitions, delta_us);
         free(matrix_c);
     }
 
