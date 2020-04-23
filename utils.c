@@ -92,7 +92,7 @@ void print_vector(double *vector, int size) {
 
 // Generates SQUARE matrix of the size x size
 void random_matrix(double *matrix, int size) {
-    for (int i = 0; i < size * size; i++) {
+    for (int i = 0; i < size; i++) {
         *(matrix + i) = (double) rand() / RAND_MAX * (NUM_MAX * 2) - NUM_MAX;
     }
 }

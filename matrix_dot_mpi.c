@@ -9,7 +9,7 @@
 
 // Shows which row of the grid this node is on
 int grid_row(int partition_rank, int partitions_width) {
-    return (int) (partition_rank/partitions_width);
+    return (int) (partition_rank / partitions_width);
 }
 
 int a_offset(int partition_rank, int partitions_width, int partition_size) {
@@ -18,11 +18,11 @@ int a_offset(int partition_rank, int partitions_width, int partition_size) {
 
 // Shows which col of the grid this node is on
 int grid_col(int partition_rank, int partitions_width) {
-    return partition_rank%partitions_width;
+    return partition_rank % partitions_width;
 }
 
 int b_offset(int partition_rank, int partitions_width, int partition_size) {
-    return grid_col(partition_rank, partitions_width)  * partition_size;
+    return grid_col(partition_rank, partitions_width) * partition_size;
 }
 
 /**
@@ -32,7 +32,7 @@ int b_offset(int partition_rank, int partitions_width, int partition_size) {
  * @param matrix_c - row-wise addressed matrix_c
  * @param matrix_size - size of the matrix
  */
- /// There must be an ability for non-square matrices
+/// There must be an ability for non-square matrices
 void ijk(double *matrix_a, double *matrix_b, double *matrix_c, int matrix_size, int partition_size) {
     for (int i = 0; i < partition_size; i++) {
         for (int j = 0; j < partition_size; j++) {
@@ -88,7 +88,8 @@ int main(int argc, char **argv) {
     int grid_col_pos = grid_col(partition_rank, partitions_width);
 
     printf("Partition %d of %d total, partition size %d, matrix %d x %d partitions, place in grid %dx%d, local offset A %d, B %d\n",
-           partition_rank, num_partitions, partition_size, partitions_width, partitions_width, grid_row_pos, grid_col_pos, local_offset_a, local_offset_b);
+           partition_rank, num_partitions, partition_size, partitions_width, partitions_width, grid_row_pos,
+           grid_col_pos, local_offset_a, local_offset_b);
 
     double *a_local_stripe = malloc(partition_size * partitions_width * sizeof(double));
     double *b_local_stripe = malloc(partition_size * partitions_width * sizeof(double));
@@ -96,49 +97,52 @@ int main(int argc, char **argv) {
     random_matrix(a_local_stripe + local_offset_a, partition_size);
     random_matrix(b_local_stripe + local_offset_b, partition_size);
 
+    int mpi_col_in_row_rank, mpi_row_size;
+    MPI_Comm row_comm;
+    MPI_Comm_split(MPI_COMM_WORLD, grid_row_pos, partition_rank, &row_comm);
+    MPI_Comm_rank(row_comm, &mpi_col_in_row_rank);
+    MPI_Comm_size(row_comm, &mpi_row_size);
+
+    printf("Communication group for row %d, world rank %d, row rank %d, row size %d\n", grid_row_pos, partition_rank,
+           mpi_col_in_row_rank, mpi_row_size);
+
+    int mpi_row_in_col_rank, mpi_col_size;
+    MPI_Comm col_comm;
+    MPI_Comm_split(MPI_COMM_WORLD, grid_col_pos, partition_rank, &col_comm);
+    MPI_Comm_rank(col_comm, &mpi_row_in_col_rank);
+    MPI_Comm_size(col_comm, &mpi_col_size);
+    printf("Communication group for col %d, world rank %d, row rank %d, row size %d\n", grid_col_pos, partition_rank,
+           mpi_row_in_col_rank, mpi_col_size);
 
     // Blocks until all processes in the communicator have reached this routine
     MPI_Barrier(MPI_COMM_WORLD);
     if (partition_rank == 0)
-        printf("Passed first barrier\n");
         start = MPI_Wtime();
 
     // Here we're syncing a_local_stripe
-    for (int dst_rank = 0; dst_rank < num_partitions; dst_rank += partitions_width) {
-        // Here we send our a partition node with dst_rank to complete their a_local_stripe, as well as completing ours
-        if (dst_rank != partition_rank && grid_col_pos == grid_col(dst_rank, partitions_width)) { // only other in same column
-            int remote_offset = a_offset(dst_rank, partitions_width, partition_size);
-            printf("Syncing a_local_stripe, local offset %d, remote %d from node %d to %d\n", local_offset_a, remote_offset, partition_rank, dst_rank);
-            MPI_Gather(a_local_stripe + local_offset_a,
-                       partition_size, MPI_DOUBLE,
-                       a_local_stripe + remote_offset,
-                       partition_size, MPI_DOUBLE, dst_rank, MPI_COMM_WORLD
-            );
-        }
+    for (int dst_rank = 0; dst_rank < mpi_col_size; dst_rank++) {
+        int remote_offset = a_offset(dst_rank, partitions_width, partition_size);
+        printf("Syncing a_local_stripe col %d, local offset %d, remote %d from node %d to %d(col)\n",
+               grid_col_pos, local_offset_a, remote_offset, mpi_col_in_row_rank, dst_rank);
+        MPI_Gather(a_local_stripe + local_offset_a,
+                   partition_size, MPI_DOUBLE,
+                   a_local_stripe + remote_offset,
+                   partition_size, MPI_DOUBLE, dst_rank, row_comm
+        );
     }
-
-    if (partition_rank == 0)
-        printf("a_local_stripe sync completed\n");
-
-    // Blocking sync
-    MPI_Barrier(MPI_COMM_WORLD);
 
     // Here we're syncing b_local_stripe
-    for (int dst_rank = 0; dst_rank < num_partitions; dst_rank += partitions_width) {
-        // Here we send our a partition node with dst_rank to complete their a_local_stripe, as well as completing ours
-        if (dst_rank != partition_rank && grid_row_pos == grid_row(dst_rank, partitions_width)) { // only other nodes
-            int remote_offset = b_offset(dst_rank, partitions_width, partition_size);
-            printf("Syncing b_local_stripe, local offset %d, remote %d from node %d to %d\n", local_offset_b, remote_offset, partition_rank, dst_rank);
-            MPI_Gather(b_local_stripe + local_offset_b,
-                       partition_size, MPI_DOUBLE,
-                       b_local_stripe + remote_offset,
-                       partition_size, MPI_DOUBLE, dst_rank, MPI_COMM_WORLD
-            );
-        }
+    for (int dst_rank = 0; dst_rank < mpi_row_size; dst_rank++) {
+        int remote_offset = b_offset(dst_rank, partitions_width, partition_size);
+        printf("Syncing b_local_stripe row %d, local offset %d, remote %d from node %d to %d(row)\n",
+               grid_row_pos, local_offset_b, remote_offset, mpi_row_in_col_rank, dst_rank);
+        MPI_Gather(b_local_stripe + local_offset_b,
+                   partition_size, MPI_DOUBLE,
+                   b_local_stripe + remote_offset,
+                   partition_size, MPI_DOUBLE, dst_rank, row_comm
+        );
     }
 
-    if (partition_rank == 0)
-        printf("b_local_stripe sync completed\n");
     // Blocking sync
     MPI_Barrier(MPI_COMM_WORLD);
 
